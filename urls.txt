@@ -304,6 +304,8 @@ https://raw.githubusercontent.com/NikolaiT/free-proxy-list/refs/heads/main/proxi
 https://freeproxydb.com/api/proxy/search?country=&protocol=&anonymity=&speed=0,60&https=0&page_index=1&page_size=100
 https://spys.one/en/socks-proxy-list/
 https://www.freeproxy.world/?type=socks5
+https://www.freeproxy.world/?type=socks4
+https://www.freeproxy.world/?type=http
 https://sockslist.us/Raw
 https://proxy5.net/free-proxy
 https://proxydb.net/
@@ -318,3 +320,11 @@ https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/head
 https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/socks4.txt
 https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/http.txt
 https://raw.githubusercontent.com/gitrecon1455/ProxyScraper/refs/heads/main/proxies.txt
+https://platform.censys.io/search?q=%22socks5+proxy%22
+https://roundproxies.com/api/get-free-proxies/?limit=0&page=1&sort_by=lastChecked&sort_type=desc
+https://www.shodan.io/search?query=socks5+proxy
+https://proxybros.com/free-proxy-list/
+https://raw.githubusercontent.com/SoliSpirit/mtproto/master/all_proxies.txt
+https://proxyfreeonly.com/api/free-proxy-list?limit=0&page=1&sortBy=lastChecked&sortType=desc
+https://proxy-free.com/proxy-list/
+https://openproxylist.com/proxy/
