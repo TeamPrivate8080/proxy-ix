@@ -15,8 +15,8 @@ from urllib.parse import urlparse, parse_qs, unquote
 SOURCES_FILE     = "urls.txt"
 OUTPUT_FILE      = "working_socks5.txt"
 TIMEOUT          = 12
-CHECKER_THREADS  = 2500
-FETCHER_THREADS  = 120
+CHECKER_THREADS  = 20000
+FETCHER_THREADS  = 500
 MAX_QUEUE_SIZE   = 600000
 
 IP_PORT_REGEX = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b')
@@ -36,7 +36,7 @@ if os.path.exists(OUTPUT_FILE):
                 ip = cleaned.split(":", 1)[0].strip()
                 if ip:
                     known_ips.add(ip)
-        print(f"[INIT] Loaded {len(known_ips)} unique known SOCKS5 IPs (working file)")
+        print(f"[CACHE] Loaded {len(known_ips)} unique known SOCKS5 IPs (working file)")
     except Exception as e:
         print(f"[WARN] Load error: {e}")
 
@@ -147,7 +147,7 @@ def search_duckduckgo(query):
     try:
         params = {"q": query, "kl": "wt-wt"}
         headers = {"User-Agent": random.choice(USER_AGENTS)}
-        r = requests.get("https://duckduckgo.com/html/", params=params, headers=headers, timeout=12)
+        r = requests.get("https://duckduckgo.com/html/", params=params, headers=headers, timeout=6)
         soup = BeautifulSoup(r.text, "html.parser")
         for result in soup.select(".result__url"):
             href = extract_clean_url(result.get("href", ""))
@@ -162,7 +162,7 @@ def search_bing(query):
     try:
         params = {"q": query, "count": 30}
         headers = {"User-Agent": random.choice(USER_AGENTS)}
-        r = requests.get("https://www.bing.com/search", params=params, headers=headers, timeout=12)
+        r = requests.get("https://www.bing.com/search", params=params, headers=headers, timeout=6)
         soup = BeautifulSoup(r.text, "html.parser")
         for link in soup.select("li.b_algo h2 a, .b_title a"):
             href = link.get("href", "")
@@ -177,7 +177,7 @@ def search_yahoo(query):
     try:
         params = {"p": query, "n": 30}
         headers = {"User-Agent": random.choice(USER_AGENTS)}
-        r = requests.get("https://search.yahoo.com/search", params=params, headers=headers, timeout=12)
+        r = requests.get("https://search.yahoo.com/search", params=params, headers=headers, timeout=6)
         soup = BeautifulSoup(r.text, "html.parser")
         for link in soup.select("a.ac-algo, .compTitle a"):
             href = extract_clean_url(link.get("href", ""))
@@ -192,7 +192,7 @@ def search_startpage(query):
     try:
         params = {"q": query, "page": "1"}
         headers = {"User-Agent": random.choice(USER_AGENTS)}
-        r = requests.get("https://www.startpage.com/sp/search", params=params, headers=headers, timeout=12)
+        r = requests.get("https://www.startpage.com/sp/search", params=params, headers=headers, timeout=6)
         soup = BeautifulSoup(r.text, "html.parser")
         for result in soup.select(".w-gl__result__url"):
             href = result.get("href", "")
@@ -207,7 +207,7 @@ def search_mojeek(query):
     try:
         params = {"q": query}
         headers = {"User-Agent": random.choice(USER_AGENTS)}
-        r = requests.get("https://www.mojeek.com/search", params=params, headers=headers, timeout=12)
+        r = requests.get("https://www.mojeek.com/search", params=params, headers=headers, timeout=6)
         soup = BeautifulSoup(r.text, "html.parser")
         for result in soup.select("a.ob"):
             href = result.get("href", "")
@@ -240,6 +240,9 @@ def discover_sources():
         "socks5.txt site:raw.githubusercontent.com",
         "socks5 proxy list txt -inurl:(login signup forum)",
         "free socks5 list txt github raw",
+        "free proxies list",
+        "free proxies download txt -inurl:(login signup forum)",
+        "http socks4 socks5 free proxy"
     ]
 
     found = []
