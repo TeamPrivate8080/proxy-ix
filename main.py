@@ -5,6 +5,7 @@ import time
 import os
 import random
 import re
+import sys
 import concurrent.futures
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
@@ -13,17 +14,48 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs, unquote
 
 SOURCES_FILE     = "urls.txt"
-OUTPUT_FILE      = "working_socks5.txt"
-TIMEOUT          = 12
-CHECKER_THREADS  = 20000
-FETCHER_THREADS  = 500
-MAX_QUEUE_SIZE   = 600000
+TIMEOUT          = 22
+CHECKER_THREADS  = 1800
+FETCHER_THREADS  = 220
+MAX_QUEUE_SIZE   = 450000
 
 IP_PORT_REGEX = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b')
 
 check_queue      = queue.Queue(maxsize=MAX_QUEUE_SIZE)
 known_ips        = set()
 write_lock       = threading.Lock()
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+]
+
+OUTPUT_FILES = {
+    "socks5": "working_socks5.txt",
+    "socks4": "working_socks4.txt",
+    "http":   "working_http.txt",
+}
+
+def parse_args():
+    mode = "socks5"
+    if len(sys.argv) >= 2:
+        arg = sys.argv[1].lower()
+        if arg in ["-socks5", "--socks5"]:
+            mode = "socks5"
+        elif arg in ["-socks4", "--socks4"]:
+            mode = "socks4"
+        elif arg in ["-http", "--http", "-https", "--https"]:
+            mode = "http"
+        else:
+            print("Usage: python start.py [-socks5 | -socks4 | -http]")
+            sys.exit(1)
+    return mode
+
+MODE = parse_args()
+OUTPUT_FILE = OUTPUT_FILES[MODE]
+print(f"[MODE] Running as {MODE.upper()} → output: {OUTPUT_FILE}")
 
 if os.path.exists(OUTPUT_FILE):
     try:
@@ -32,35 +64,72 @@ if os.path.exists(OUTPUT_FILE):
                 line = line.strip()
                 if not line or line.startswith("#") or ":" not in line:
                     continue
-                cleaned = line.replace("socks5://", "").replace("socks4://", "").replace("http://", "").replace("https://", "")
+                cleaned = re.sub(r'^(socks[45]|https?)://', '', line)
                 ip = cleaned.split(":", 1)[0].strip()
                 if ip:
                     known_ips.add(ip)
-        print(f"[CACHE] Loaded {len(known_ips)} unique known SOCKS5 IPs (working file)")
+        print(f"[CACHE] Loaded {len(known_ips)} known {MODE.upper()} IPs")
     except Exception as e:
-        print(f"[WARN] Load error: {e}")
+        print(f"[CACHE ERROR] {e}")
 
-def is_real_socks5(sock):
+def is_socks5(sock):
     try:
         sock.sendall(b"\x05\x01\x00")
         data = sock.recv(2)
-        return len(data) >= 2 and data[0] == 0x05 and data[1] == 0x00
+        return len(data) == 2 and data == b"\x05\x00"
     except:
         return False
 
-def check_proxy(proxy_line):
-    proxy = proxy_line.strip()
-    if not proxy or ":" not in proxy:
+def is_socks4(sock):
+    try:
+        req = b"\x04\x01\x00\x00\x00\x00\x00\x00\x00root\0"
+        sock.sendall(req)
+        data = sock.recv(8)
+        if len(data) < 8:
+            return False
+        return data[0] == 0 and data[1] in (90, 92, 93)
+    except:
+        return False
+
+def is_http_proxy(sock):
+    try:
+        req = (
+            b"CONNECT www.google.com:443 HTTP/1.1\r\n"
+            b"Host: www.google.com:443\r\n"
+            b"User-Agent: curl/7.68.0\r\n"
+            b"Proxy-Connection: Keep-Alive\r\n\r\n"
+        )
+        sock.sendall(req)
+        data = sock.recv(512)
+        return b"200" in data[:128]
+    except:
+        return False
+
+CHECK_FNS = {
+    "socks5": is_socks5,
+    "socks4": is_socks4,
+    "http":   is_http_proxy,
+}
+
+PREFIX = {
+    "socks5": "socks5://",
+    "socks4": "socks4://",
+    "http":   "http://",
+}
+
+def check_proxy(line):
+    line = line.strip()
+    if not line or ":" not in line:
         return None
 
-    proxy = proxy.replace("socks5://", "").replace("socks4://", "").replace("http://", "").replace("https://", "")
-    if proxy.count(":") != 1:
+    cleaned = re.sub(r'^(socks[45]|https?)://', '', line)
+    if cleaned.count(":") != 1:
         return None
 
-    host, port_str = proxy.rsplit(":", 1)
+    host, port_str = cleaned.rsplit(":", 1)
     try:
         port = int(port_str)
-        if not (1 <= port <= 65535):
+        if not 1 <= port <= 65535:
             return None
     except:
         return None
@@ -70,10 +139,10 @@ def check_proxy(proxy_line):
         s.settimeout(TIMEOUT)
         s.connect((host, port))
 
-        if is_real_socks5(s):
+        if CHECK_FNS[MODE](s):
             s.close()
-            return f"socks5://{proxy}", host
-
+            full = PREFIX[MODE] + cleaned
+            return full, host
         s.close()
         return None
     except:
@@ -82,51 +151,43 @@ def check_proxy(proxy_line):
 def checker_worker():
     while True:
         try:
-            proxy = check_queue.get(timeout=3.0)
+            proxy = check_queue.get(timeout=5)
         except queue.Empty:
             break
 
-        result_tuple = check_proxy(proxy)
-        if not result_tuple:
+        res = check_proxy(proxy)
+        if not res:
             check_queue.task_done()
             continue
 
-        result, ip = result_tuple
+        result, ip = res
 
         with write_lock:
             if ip not in known_ips:
                 known_ips.add(ip)
-                print(f"[OK] {result}")
+                print(f"[OK {MODE.upper()}] {result}")
                 try:
                     with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
                         f.write(result + "\n")
-                except Exception as e:
-                    print(f"[WRITE ERROR] {e}")
+                except:
+                    pass
 
         check_queue.task_done()
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
-]
-
-def fetch_and_extract(url, retries=2):
-    for attempt in range(retries + 1):
+def fetch_and_extract(url, retries=3):
+    for attempt in range(retries):
         try:
             ua = random.choice(USER_AGENTS)
             headers = {"User-Agent": ua}
             r = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
             if r.status_code != 200:
                 return []
-            content = r.text
-            found = IP_PORT_REGEX.findall(content)
+            found = IP_PORT_REGEX.findall(r.text)
             return [p for p in found if ":" in p and p.count(":") == 1]
         except Exception as e:
-            if attempt == retries:
-                print(f"[FETCH FAIL] {url} → {e}")
-            time.sleep(random.uniform(1.2, 3.0))
+            if attempt == retries - 1:
+                print(f"[FETCH FAIL] {url}")
+            time.sleep(random.uniform(1, 4))
     return []
 
 def extract_clean_url(href):
@@ -147,14 +208,14 @@ def search_duckduckgo(query):
     try:
         params = {"q": query, "kl": "wt-wt"}
         headers = {"User-Agent": random.choice(USER_AGENTS)}
-        r = requests.get("https://duckduckgo.com/html/", params=params, headers=headers, timeout=6)
+        r = requests.get("https://duckduckgo.com/html/", params=params, headers=headers, timeout=8)
         soup = BeautifulSoup(r.text, "html.parser")
         for result in soup.select(".result__url"):
             href = extract_clean_url(result.get("href", ""))
             if href and any(x in href.lower() for x in [".txt", "/raw/", "githubusercontent", "socks5", "proxy", "list", "proxies"]):
                 urls.append(href)
     except Exception as e:
-        print(f"[DuckDuckGo error] {e}")
+        print(f"[DDG error] {e}")
     return list(set(urls))[:20]
 
 def search_bing(query):
@@ -162,7 +223,7 @@ def search_bing(query):
     try:
         params = {"q": query, "count": 30}
         headers = {"User-Agent": random.choice(USER_AGENTS)}
-        r = requests.get("https://www.bing.com/search", params=params, headers=headers, timeout=6)
+        r = requests.get("https://www.bing.com/search", params=params, headers=headers, timeout=8)
         soup = BeautifulSoup(r.text, "html.parser")
         for link in soup.select("li.b_algo h2 a, .b_title a"):
             href = link.get("href", "")
@@ -177,7 +238,7 @@ def search_yahoo(query):
     try:
         params = {"p": query, "n": 30}
         headers = {"User-Agent": random.choice(USER_AGENTS)}
-        r = requests.get("https://search.yahoo.com/search", params=params, headers=headers, timeout=6)
+        r = requests.get("https://search.yahoo.com/search", params=params, headers=headers, timeout=8)
         soup = BeautifulSoup(r.text, "html.parser")
         for link in soup.select("a.ac-algo, .compTitle a"):
             href = extract_clean_url(link.get("href", ""))
@@ -192,7 +253,7 @@ def search_startpage(query):
     try:
         params = {"q": query, "page": "1"}
         headers = {"User-Agent": random.choice(USER_AGENTS)}
-        r = requests.get("https://www.startpage.com/sp/search", params=params, headers=headers, timeout=6)
+        r = requests.get("https://www.startpage.com/sp/search", params=params, headers=headers, timeout=8)
         soup = BeautifulSoup(r.text, "html.parser")
         for result in soup.select(".w-gl__result__url"):
             href = result.get("href", "")
@@ -207,7 +268,7 @@ def search_mojeek(query):
     try:
         params = {"q": query}
         headers = {"User-Agent": random.choice(USER_AGENTS)}
-        r = requests.get("https://www.mojeek.com/search", params=params, headers=headers, timeout=6)
+        r = requests.get("https://www.mojeek.com/search", params=params, headers=headers, timeout=8)
         soup = BeautifulSoup(r.text, "html.parser")
         for result in soup.select("a.ob"):
             href = result.get("href", "")
@@ -233,7 +294,7 @@ def search_yandex(query):
     return list(set(urls))[:12]
 
 def discover_sources():
-    print("[DISCOVER] Querying multiple search engines for proxy list URLs...")
+    print("[DISCOVER] Querying search engines for fresh proxy lists...")
     base_queries = [
         "socks5 proxy list txt raw github",
         "free socks5 proxies txt updated 2026",
@@ -241,11 +302,12 @@ def discover_sources():
         "socks5 proxy list txt -inurl:(login signup forum)",
         "free socks5 list txt github raw",
         "free proxies list",
-        "free proxies download txt -inurl:(login signup forum)",
-        "http socks4 socks5 free proxy"
+        "free proxies download txt",
+        "http socks4 socks5 free proxy list txt",
+        "socks4 proxy list txt 2026",
+        "http proxy list txt raw github",
     ]
 
-    found = []
     engines = [
         search_duckduckgo,
         search_bing,
@@ -255,28 +317,29 @@ def discover_sources():
         search_yandex,
     ]
 
+    found = []
     for q in base_queries:
         for engine_func in engines:
             try:
                 found.extend(engine_func(q))
-                time.sleep(random.uniform(2.0, 4.5))
+                time.sleep(random.uniform(1.8, 4.2))
             except:
                 pass
 
     good_keywords = [
         ".txt", "/raw/", "raw.githubusercontent.com", "cdn.jsdelivr.net",
-        "socks5", "proxy-list", "proxies", "socks5.txt", "data.txt"
+        "socks5", "socks4", "http", "proxy-list", "proxies", "socks5.txt", "data.txt"
     ]
 
     filtered = []
     seen = set()
     for u in found:
-        lower_u = u.lower()
-        if any(kw in lower_u for kw in good_keywords) and len(u) < 220 and u not in seen:
+        lu = u.lower()
+        if any(kw in lu for kw in good_keywords) and len(u) < 240 and u not in seen:
             seen.add(u)
             filtered.append(u)
 
-    print(f"[DISCOVER] Collected {len(filtered)} potential proxy source URLs")
+    print(f"[DISCOVER] Found {len(filtered)} promising proxy list URLs")
     return filtered
 
 def main():
@@ -284,16 +347,15 @@ def main():
     if os.path.exists(SOURCES_FILE):
         try:
             with open(SOURCES_FILE, "r", encoding="utf-8") as f:
-                static_sources = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+                static_sources = [l.strip() for l in f if l.strip() and not l.startswith("#")]
         except:
             pass
 
     dynamic_sources = discover_sources()
-
     all_sources = list(set(static_sources + dynamic_sources))
     random.shuffle(all_sources)
 
-    print(f"Total sources to fetch: {len(all_sources)}")
+    print(f"[SOURCES] Fetching from {len(all_sources)} URLs")
 
     all_proxies = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=FETCHER_THREADS) as executor:
@@ -304,14 +366,18 @@ def main():
     unique_proxies = list(set(all_proxies))
     random.shuffle(unique_proxies)
 
-    print(f"Collected {len(unique_proxies)} unique IP:PORT combinations")
+    print(f"[PROXIES] Collected {len(unique_proxies):,} unique IP:PORT entries")
 
+    enqueued = 0
     for p in unique_proxies:
         try:
-            check_queue.put(p, block=False)
+            check_queue.put_nowait(p)
+            enqueued += 1
         except queue.Full:
-            print("[QUEUE FULL] Stopping early...")
+            print("[QUEUE FULL] Stopping feed")
             break
+
+    print(f"[QUEUE] Enqueued {enqueued:,} proxies for checking")
 
     threads = []
     for _ in range(CHECKER_THREADS):
@@ -319,20 +385,18 @@ def main():
         t.start()
         threads.append(t)
 
-    print(f"Started {CHECKER_THREADS} checker threads. Waiting...")
-
     check_queue.join()
-    time.sleep(4)
+    time.sleep(5)
 
-    print(f"\nFinished! Unique working SOCKS5 proxies saved: {len(known_ips)}")
-    print(f"Output file: {OUTPUT_FILE}")
+    print(f"\n[FINISHED] Working {MODE.upper()} proxies: {len(known_ips)}")
+    print(f"           Saved → {OUTPUT_FILE}\n")
 
 if __name__ == "__main__":
     try:
         import resource
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        resource.setrlimit(resource.RLIMIT_NOFILE, (min(65535, hard), hard))
+        resource.setrlimit(resource.RLIMIT_NOFILE, (min(65536, hard), hard))
     except:
-        print("run:  ulimit -n 65535  or higher")
+        print("[INFO] run: ulimit -n 65536  (recommended)")
 
     main()
