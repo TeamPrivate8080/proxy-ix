@@ -10,11 +10,12 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse, parse_qs, unquote
 
 SOURCES_FILE     = "urls.txt"
 OUTPUT_FILE      = "working_socks5.txt"
-TIMEOUT          = 12  
-CHECKER_THREADS  = 800 
+TIMEOUT          = 12
+CHECKER_THREADS  = 2500
 FETCHER_THREADS  = 120
 MAX_QUEUE_SIZE   = 600000
 
@@ -35,7 +36,7 @@ if os.path.exists(OUTPUT_FILE):
                 ip = cleaned.split(":", 1)[0].strip()
                 if ip:
                     known_ips.add(ip)
-        print(f"[INIT] Loaded {len(known_ips)} unique known SOCKS5 IPs")
+        print(f"[INIT] Loaded {len(known_ips)} unique known SOCKS5 IPs (working file)")
     except Exception as e:
         print(f"[WARN] Load error: {e}")
 
@@ -108,94 +109,171 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
 ]
 
 def fetch_and_extract(url, retries=2):
     for attempt in range(retries + 1):
         try:
             ua = random.choice(USER_AGENTS)
-            if "proxyscrape.com" in url or "github" in url:
-                r = requests.get(url, timeout=10, headers={"User-Agent": ua})
-            else:
-                req = Request(url, headers={'User-Agent': ua})
-                with urlopen(req, timeout=10) as resp:
-                    if resp.code != 200:
-                        return []
-                    content = resp.read().decode("utf-8", errors="ignore")
-                    found = IP_PORT_REGEX.findall(content)
-                    return [p for p in found if ":" in p and p.count(":") == 1]
-
+            headers = {"User-Agent": ua}
+            r = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
             if r.status_code != 200:
                 return []
             content = r.text
             found = IP_PORT_REGEX.findall(content)
             return [p for p in found if ":" in p and p.count(":") == 1]
-
         except Exception as e:
             if attempt == retries:
                 print(f"[FETCH FAIL] {url} → {e}")
-            time.sleep(1.5)
+            time.sleep(random.uniform(1.2, 3.0))
     return []
 
-def search_duckduckgo(query="socks5 proxy list txt raw -inurl:(login signup forum)"):
+def extract_clean_url(href):
+    if not href:
+        return None
+    if "uddg=" in href:
+        href = unquote(href.split("uddg=")[1].split("&")[0])
+    elif "/url?q=" in href:
+        href = unquote(href.split("/url?q=")[1].split("&")[0])
+    elif "ruclick" in href or "yabs" in href:
+        return None
+    if not href.startswith("http"):
+        return None
+    return href
+
+def search_duckduckgo(query):
     urls = []
     try:
         params = {"q": query, "kl": "wt-wt"}
         headers = {"User-Agent": random.choice(USER_AGENTS)}
-        r = requests.get("https://duckduckgo.com/html/", params=params, headers=headers, timeout=10)
-        if r.status_code != 200:
-            return []
-
+        r = requests.get("https://duckduckgo.com/html/", params=params, headers=headers, timeout=12)
         soup = BeautifulSoup(r.text, "html.parser")
         for result in soup.select(".result__url"):
-            href = result.get("href", "")
-            if not href or not href.startswith("http"):
-                continue
-            if "uddg=" in href:
-                href = href.split("uddg=")[1].split("&")[0]
-                href = requests.utils.unquote(href)
-            if any(x in href.lower() for x in [".txt", "raw", "githubusercontent", "socks5", "proxy-list"]):
+            href = extract_clean_url(result.get("href", ""))
+            if href and any(x in href.lower() for x in [".txt", "/raw/", "githubusercontent", "socks5", "proxy", "list", "proxies"]):
                 urls.append(href)
     except Exception as e:
-        print(f"[DDG search error] {e}")
-    return urls[:12]
+        print(f"[DuckDuckGo error] {e}")
+    return list(set(urls))[:20]
 
-def search_bing(query="socks5 proxy list txt raw github"):
+def search_bing(query):
     urls = []
     try:
-        params = {"q": query, "count": 20}
+        params = {"q": query, "count": 30}
         headers = {"User-Agent": random.choice(USER_AGENTS)}
-        r = requests.get("https://www.bing.com/search", params=params, headers=headers, timeout=10)
-        if r.status_code != 200:
-            return []
-
+        r = requests.get("https://www.bing.com/search", params=params, headers=headers, timeout=12)
         soup = BeautifulSoup(r.text, "html.parser")
-        for link in soup.select("li.b_algo h2 a"):
+        for link in soup.select("li.b_algo h2 a, .b_title a"):
             href = link.get("href", "")
-            if href and any(x in href.lower() for x in [".txt", "/raw/", "github", "socks5"]):
+            if href and any(x in href.lower() for x in [".txt", "/raw/", "github", "socks5", "proxy"]):
                 urls.append(href)
     except Exception as e:
-        print(f"[Bing search error] {e}")
-    return urls[:10]
+        print(f"[Bing error] {e}")
+    return list(set(urls))[:18]
+
+def search_yahoo(query):
+    urls = []
+    try:
+        params = {"p": query, "n": 30}
+        headers = {"User-Agent": random.choice(USER_AGENTS)}
+        r = requests.get("https://search.yahoo.com/search", params=params, headers=headers, timeout=12)
+        soup = BeautifulSoup(r.text, "html.parser")
+        for link in soup.select("a.ac-algo, .compTitle a"):
+            href = extract_clean_url(link.get("href", ""))
+            if href and any(x in href.lower() for x in [".txt", "raw.githubusercontent", "socks5", "proxy-list"]):
+                urls.append(href)
+    except Exception as e:
+        print(f"[Yahoo error] {e}")
+    return list(set(urls))[:15]
+
+def search_startpage(query):
+    urls = []
+    try:
+        params = {"q": query, "page": "1"}
+        headers = {"User-Agent": random.choice(USER_AGENTS)}
+        r = requests.get("https://www.startpage.com/sp/search", params=params, headers=headers, timeout=12)
+        soup = BeautifulSoup(r.text, "html.parser")
+        for result in soup.select(".w-gl__result__url"):
+            href = result.get("href", "")
+            if href and any(x in href.lower() for x in [".txt", "/raw/", "socks5", "proxy"]):
+                urls.append(href)
+    except Exception as e:
+        print(f"[Startpage error] {e}")
+    return list(set(urls))[:12]
+
+def search_mojeek(query):
+    urls = []
+    try:
+        params = {"q": query}
+        headers = {"User-Agent": random.choice(USER_AGENTS)}
+        r = requests.get("https://www.mojeek.com/search", params=params, headers=headers, timeout=12)
+        soup = BeautifulSoup(r.text, "html.parser")
+        for result in soup.select("a.ob"):
+            href = result.get("href", "")
+            if href and any(x in href.lower() for x in [".txt", "githubusercontent", "socks5"]):
+                urls.append(href)
+    except Exception as e:
+        print(f"[Mojeek error] {e}")
+    return list(set(urls))[:10]
+
+def search_yandex(query):
+    urls = []
+    try:
+        params = {"text": query, "lr": "213"}
+        headers = {"User-Agent": random.choice(USER_AGENTS)}
+        r = requests.get("https://yandex.com/search/", params=params, headers=headers, timeout=12)
+        soup = BeautifulSoup(r.text, "html.parser")
+        for link in soup.select("a.link"):
+            href = link.get("href", "")
+            if href and any(x in href.lower() for x in [".txt", "/raw/", "socks5", "proxy"]):
+                urls.append(href)
+    except Exception as e:
+        print(f"[Yandex error] {e}")
+    return list(set(urls))[:12]
 
 def discover_sources():
-    print("[DISCOVER] Searching DuckDuckGo + Bing for fresh proxy lists...")
-    queries = [
+    print("[DISCOVER] Querying multiple search engines for proxy list URLs...")
+    base_queries = [
         "socks5 proxy list txt raw github",
         "free socks5 proxies txt updated 2026",
-        "socks5.txt site:raw.githubusercontent.com"
+        "socks5.txt site:raw.githubusercontent.com",
+        "socks5 proxy list txt -inurl:(login signup forum)",
+        "free socks5 list txt github raw",
     ]
 
     found = []
-    for q in queries:
-        found.extend(search_duckduckgo(q))
-        found.extend(search_bing(q))
-        time.sleep(random.uniform(1.2, 2.8))
+    engines = [
+        search_duckduckgo,
+        search_bing,
+        search_yahoo,
+        search_startpage,
+        search_mojeek,
+        search_yandex,
+    ]
 
-    good_patterns = [".txt", "raw.githubusercontent.com", "cdn.jsdelivr.net", "socks5", "proxy-list"]
-    filtered = [u for u in set(found) if any(p in u.lower() for p in good_patterns) and len(u) < 180]
+    for q in base_queries:
+        for engine_func in engines:
+            try:
+                found.extend(engine_func(q))
+                time.sleep(random.uniform(2.0, 4.5))
+            except:
+                pass
 
-    print(f"[DISCOVER] Found {len(filtered)} potential new sources")
+    good_keywords = [
+        ".txt", "/raw/", "raw.githubusercontent.com", "cdn.jsdelivr.net",
+        "socks5", "proxy-list", "proxies", "socks5.txt", "data.txt"
+    ]
+
+    filtered = []
+    seen = set()
+    for u in found:
+        lower_u = u.lower()
+        if any(kw in lower_u for kw in good_keywords) and len(u) < 220 and u not in seen:
+            seen.add(u)
+            filtered.append(u)
+
+    print(f"[DISCOVER] Collected {len(filtered)} potential proxy source URLs")
     return filtered
 
 def main():
@@ -212,7 +290,7 @@ def main():
     all_sources = list(set(static_sources + dynamic_sources))
     random.shuffle(all_sources)
 
-    print(f"Total sources to fetch: {len(all_sources)} (static + discovered)")
+    print(f"Total sources to fetch: {len(all_sources)}")
 
     all_proxies = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=FETCHER_THREADS) as executor:
@@ -238,7 +316,7 @@ def main():
         t.start()
         threads.append(t)
 
-    print(f"Started {CHECKER_THREADS} checker threads. Waiting for completion...")
+    print(f"Started {CHECKER_THREADS} checker threads. Waiting...")
 
     check_queue.join()
     time.sleep(4)
@@ -252,6 +330,6 @@ if __name__ == "__main__":
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
         resource.setrlimit(resource.RLIMIT_NOFILE, (min(65535, hard), hard))
     except:
-        print("Consider running with:  ulimit -n 65535  or higher")
+        print("run:  ulimit -n 65535  or higher")
 
     main()
