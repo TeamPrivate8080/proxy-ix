@@ -1,8 +1,3 @@
-# Proxy checker - SOCKS5 only, from any protocol source
-# FIXED: strict IP deduplication (same IP never written again, even different ports)
-# HTML/TXT IP extraction, high speed
-# Developed & optimized by TheBeast808
-
 import socket
 import queue
 import threading
