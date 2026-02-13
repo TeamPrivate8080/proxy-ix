@@ -1,3 +1,8 @@
+# Proxy checker - SOCKS5 only, from any protocol source
+# FIXED: strict IP deduplication (same IP never written again, even different ports)
+# HTML/TXT IP extraction, high speed
+# Developed & optimized by TheBeast808
+
 import socket
 import queue
 import threading
@@ -12,10 +17,10 @@ from urllib.error import URLError, HTTPError
 
 SOURCES_FILE     = "urls.txt"
 OUTPUT_FILE      = "working_socks5.txt"
-TIMEOUT          = 2.5          
-CHECKER_THREADS  = 600
-FETCHER_THREADS  = 80
-MAX_QUEUE_SIZE   = 300000
+TIMEOUT          = 10        
+CHECKER_THREADS  = 10000
+FETCHER_THREADS  = 100
+MAX_QUEUE_SIZE   = 800000
 
 IP_PORT_REGEX = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b')
 
@@ -30,9 +35,11 @@ if os.path.exists(OUTPUT_FILE):
                 line = line.strip()
                 if not line or line.startswith("#") or ":" not in line:
                     continue
-                ip = line.split(":", 1)[0].strip()
-                known_ips.add(ip)
-        print(f"[INIT] Loaded {len(known_ips)} known SOCKS5 IPs")
+                cleaned = line.replace("socks5://", "").replace("socks4://", "").replace("http://", "").replace("https://", "")
+                ip = cleaned.split(":", 1)[0].strip()
+                if ip:
+                    known_ips.add(ip)
+        print(f"[INIT] Loaded {len(known_ips)} unique known IPs (cleaned)")
     except Exception as e:
         print(f"[WARN] Load error: {e}")
 
@@ -63,9 +70,6 @@ def check_proxy(proxy_line):
 
     ip = host.strip()
 
-    if ip in known_ips:
-        return None
-
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(TIMEOUT)
@@ -73,7 +77,7 @@ def check_proxy(proxy_line):
 
         if is_real_socks5(s):
             s.close()
-            return f"socks5://{proxy}"
+            return f"socks5://{proxy}", ip
 
         s.close()
         return None
@@ -87,19 +91,22 @@ def checker_worker():
         except queue.Empty:
             break
 
-        result = check_proxy(proxy)
-        if result:
-            ip = result.split("://", 1)[1].split(":", 1)[0]
+        result_tuple = check_proxy(proxy)
+        if not result_tuple:
+            check_queue.task_done()
+            continue
 
-            with write_lock:
-                if ip not in known_ips:
-                    known_ips.add(ip)
-                    print(f"[OK] {result}")
-                    try:
-                        with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
-                            f.write(result + "\n")
-                    except Exception as e:
-                        print(f"[WRITE ERROR] {e}")
+        result, ip = result_tuple
+
+        with write_lock:
+            if ip not in known_ips:
+                known_ips.add(ip)
+                print(f"[OK] {result}")
+                try:
+                    with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
+                        f.write(result + "\n")
+                except Exception as e:
+                    print(f"[WRITE ERROR] {e}")
 
         check_queue.task_done()
 
@@ -157,6 +164,6 @@ if __name__ == "__main__":
         import resource
         resource.setrlimit(resource.RLIMIT_NOFILE, (65535, 1048576))
     except:
-        print("slow? use: ulimit -n 1048576")
+        print("Run with: ulimit -n 1048576")
 
     main()
